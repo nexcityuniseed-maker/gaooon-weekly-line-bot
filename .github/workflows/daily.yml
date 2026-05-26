@@ -12,6 +12,9 @@ on:
     paths:
       - ".github/workflows/daily.yml"  # ワークフロー変更時のみ自動実行（初回テスト用）
 
+permissions:
+  contents: read
+
 jobs:
   send-report:
     runs-on: ubuntu-latest
