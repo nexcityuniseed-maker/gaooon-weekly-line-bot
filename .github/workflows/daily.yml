@@ -7,10 +7,6 @@ on:
     - cron: "0 0 * * 1"
   workflow_dispatch:
     # 手動実行も可能（GitHubの「Actions」タブから "Run workflow"）
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/daily.yml"  # ワークフロー変更時のみ自動実行（初回テスト用）
 
 permissions:
   contents: read
