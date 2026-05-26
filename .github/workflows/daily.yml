@@ -21,14 +21,18 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: コードをチェックアウト
-        uses: actions/checkout@v4
+      - name: スクリプトをraw URLから取得
+        run: |
+          REPO="${{ github.repository }}"
+          REF="${{ github.sha }}"
+          curl -sSLf -o daily_report.py "https://raw.githubusercontent.com/${REPO}/${REF}/daily_report.py"
+          curl -sSLf -o requirements.txt "https://raw.githubusercontent.com/${REPO}/${REF}/requirements.txt"
+          ls -la daily_report.py requirements.txt
 
       - name: Python セットアップ
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: Python依存ライブラリをインストール
         run: |
