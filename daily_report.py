@@ -157,63 +157,81 @@ def open_survey_result_page(page: Page, location: str) -> None:
 
     # 「満足度の高い回答」→クリックで「低い回答」に切り替わるトグル
     # クラウドのヘッドレス環境ではclickが効かないケースがあるため、複数手段でフォールバック
-    toggled = False
+    # 切り替え成功の判定は「データ行が再描画される」ことで行う
 
-    # 試行1: Playwright標準click（visible判定あり）
-    for sel in ['text=満足度の高い回答', '[role="button"]:has-text("満足度")']:
+    def has_low_data():
+        """満足度の低い回答テーブルに日付付きの行が出現したか"""
         try:
-            btn = page.locator(sel).first
+            return page.evaluate(
+                "() => /\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日\\s*\\([日月火水木金土]\\)\\s*\\d{1,2}:\\d{2}/.test(document.body.innerText)"
+            )
+        except Exception:
+            return False
+
+    toggle_methods = []
+
+    def try_standard_click():
+        try:
+            btn = page.locator('text=満足度の高い回答').first
             if btn.is_visible():
                 btn.click()
-                page.wait_for_timeout(7000)
-                toggled = True
-                break
-        except Exception:
-            continue
+                return "standard"
+        except Exception as e:
+            return f"standard_err:{e.__class__.__name__}"
+        return None
 
-    # 試行2: force=Trueクリック（visibility判定スキップ）
-    if not toggled:
+    def try_force_click():
         try:
             page.locator('text=満足度の高い回答').first.click(force=True, timeout=5000)
-            page.wait_for_timeout(7000)
-            toggled = True
-        except Exception:
-            pass
+            return "force"
+        except Exception as e:
+            return f"force_err:{e.__class__.__name__}"
 
-    # 試行3: JavaScript で直接DOMクリック（テキストノードを親ボタンまで遡って .click()）
-    if not toggled:
+    def try_js_click():
         try:
-            page.evaluate("""() => {
+            ok = page.evaluate("""() => {
                 const els = Array.from(document.querySelectorAll('*'));
                 for (const el of els) {
                     if (el.children.length === 0 && el.textContent &&
                         el.textContent.trim() === '満足度の高い回答') {
+                        // 親要素まで遡って onclick がついている要素を探して1回だけクリック
                         let p = el;
-                        for (let i = 0; i < 6 && p; i++) {
-                            p.click();
+                        for (let i = 0; i < 5 && p; i++) {
+                            const styles = window.getComputedStyle(p);
+                            if (styles.cursor === 'pointer' || p.onclick) {
+                                p.click(); return true;
+                            }
                             p = p.parentElement;
                         }
-                        return true;
+                        // 最後の手段：直接テキストノード親をクリック
+                        if (el.parentElement) { el.parentElement.click(); return true; }
                     }
                 }
                 return false;
             }""")
-            page.wait_for_timeout(7000)
-            toggled = True
+            return "js" if ok else "js_no_target"
+        except Exception as e:
+            return f"js_err:{e.__class__.__name__}"
+
+    # 標準clickを試して、データ行が出るまで待つ。出なければ次の手段を試す
+    for attempt_name, fn in [("standard", try_standard_click), ("force", try_force_click), ("js", try_js_click)]:
+        res = fn()
+        toggle_methods.append(f"{attempt_name}={res}")
+        # クリック後にデータが出るまで最大15秒待つ
+        try:
+            page.wait_for_function(
+                "() => /\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日\\s*\\([日月火水木金土]\\)\\s*\\d{1,2}:\\d{2}/.test(document.body.innerText)",
+                timeout=15000
+            )
+            print(f"  DEBUG: filter toggle ok via [{attempt_name}] / methods={toggle_methods}", file=sys.stderr)
+            break
         except Exception:
-            pass
+            continue
+    else:
+        print(f"  WARN: filter toggle all-failed / methods={toggle_methods}", file=sys.stderr)
 
-    # 切り替え結果を確認：本文に「満足度の低い回答」が出ているはず
-    try:
-        confirmed = page.evaluate(
-            "() => document.body.innerText.includes('満足度の低い回答')"
-        )
-        print(f"  DEBUG: filter toggled={toggled}, confirmed_low={confirmed}", file=sys.stderr)
-    except Exception:
-        pass
-
-    if not toggled:
-        print("  WARN: 満足度フィルタ切替に失敗", file=sys.stderr)
+    page.wait_for_load_state("networkidle", timeout=15000)
+    page.wait_for_timeout(2000)
 
     page.wait_for_load_state("networkidle", timeout=20000)
     page.wait_for_timeout(3000)
