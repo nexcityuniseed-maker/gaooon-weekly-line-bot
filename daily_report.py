@@ -124,8 +124,8 @@ def login(page: Page) -> None:
 
 def open_survey_result_page(page: Page, location: str) -> None:
     page.goto(survey_url(location), wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=20000)
-    page.wait_for_timeout(2000)
+    page.wait_for_load_state("networkidle", timeout=30000)
+    page.wait_for_timeout(4000)  # ★Bubbleの初期描画は重め
 
     # 「アンケート結果」タブ（ヘッダー部にあるボタン）をクリック
     tab_clicked = False
@@ -153,21 +153,36 @@ def open_survey_result_page(page: Page, location: str) -> None:
     if not tab_clicked:
         print("  WARN: アンケート結果タブが見つからない", file=sys.stderr)
 
-    page.wait_for_timeout(4000)
+    page.wait_for_timeout(7000)  # ★タブ切替→テーブル再描画待ち（クラウド遅延対策）
 
     # 「満足度の高い回答」→クリックで「低い回答」に切り替わるトグル
+    toggled = False
     for sel in ['text=満足度の高い回答', '[role="button"]:has-text("満足度")']:
         try:
             btn = page.locator(sel).first
             if btn.is_visible():
                 btn.click()
-                page.wait_for_timeout(4000)
+                page.wait_for_timeout(7000)  # ★フィルタ切替→再ロード待ち
+                toggled = True
                 break
         except Exception:
             continue
 
-    page.wait_for_load_state("networkidle", timeout=15000)
-    page.wait_for_timeout(2000)
+    if not toggled:
+        print("  WARN: 満足度フィルタ切替に失敗", file=sys.stderr)
+
+    page.wait_for_load_state("networkidle", timeout=20000)
+    page.wait_for_timeout(3000)
+
+    # データテーブルが描画されるまで明示待機（行が出るまで or 上限15秒）
+    try:
+        page.wait_for_function(
+            "() => document.body.innerText.match(/\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日/) "
+            "|| document.body.innerText.includes('回答数')",
+            timeout=15000
+        )
+    except Exception:
+        pass
 
 
 def parse_survey_rows(page: Page) -> List[SurveyAnswer]:
@@ -211,8 +226,9 @@ def parse_survey_rows(page: Page) -> List[SurveyAnswer]:
 
 def open_google_reviews_tab(page: Page) -> None:
     page.locator('text=Googleクチコミ').first.click()
-    page.wait_for_timeout(4000)
-    page.wait_for_load_state("networkidle", timeout=15000)
+    page.wait_for_timeout(6000)  # ★クチコミタブの描画待ち
+    page.wait_for_load_state("networkidle", timeout=20000)
+    page.wait_for_timeout(2000)
 
 
 def parse_google_reviews(page: Page) -> List[GoogleReview]:
