@@ -45,6 +45,7 @@ GAOOON_EMAIL = os.getenv("GAOOON_EMAIL", "").strip()
 GAOOON_PASSWORD = os.getenv("GAOOON_PASSWORD", "").strip()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+LINE_GROUP_ID = os.getenv("LINE_GROUP_ID", "").strip()  # 設定があれば push、無ければ broadcast
 SEND_MODE = os.getenv("SEND_MODE", "dry-run").strip().lower()
 
 # 対象店舗リスト（BWC社の上位5店舗）
@@ -752,18 +753,29 @@ def build_flex_message(struct: dict, store_name: str, store_location: str) -> di
 # LINE 配信
 # ------------------------------------------------------------------
 def send_line_broadcast(flex_message: dict) -> tuple[bool, str]:
+    """LINE_GROUP_ID が設定されていれば push（グループ宛 / 通数効率◎）、
+    無ければ broadcast（友達全員宛）にフォールバック"""
     if not LINE_TOKEN:
         return False, "LINE_CHANNEL_ACCESS_TOKEN が未設定"
-    url = "https://api.line.me/v2/bot/message/broadcast"
+
     headers = {
         "Authorization": f"Bearer {LINE_TOKEN}",
         "Content-Type": "application/json",
     }
-    payload = {"messages": [flex_message]}
+
+    if LINE_GROUP_ID:
+        url = "https://api.line.me/v2/bot/message/push"
+        payload = {"to": LINE_GROUP_ID, "messages": [flex_message]}
+        mode = "push to group"
+    else:
+        url = "https://api.line.me/v2/bot/message/broadcast"
+        payload = {"messages": [flex_message]}
+        mode = "broadcast"
+
     res = requests.post(url, headers=headers, json=payload, timeout=30)
     if res.status_code >= 300:
-        return False, f"HTTP {res.status_code}: {res.text}"
-    return True, "OK"
+        return False, f"{mode} HTTP {res.status_code}: {res.text}"
+    return True, f"OK ({mode})"
 
 
 # ------------------------------------------------------------------

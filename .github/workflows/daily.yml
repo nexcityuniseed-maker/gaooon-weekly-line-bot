@@ -45,6 +45,7 @@ jobs:
           GAOOON_PASSWORD: ${{ secrets.GAOOON_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
           STORE_LOCATION: ${{ vars.STORE_LOCATION || 'chukasobanito_nagoya' }}
           STORE_NAME: ${{ vars.STORE_NAME || '中華そば二兎' }}
           SEND_MODE: send
