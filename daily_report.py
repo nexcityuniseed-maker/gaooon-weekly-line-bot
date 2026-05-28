@@ -246,6 +246,27 @@ def open_survey_result_page(page: Page, location: str) -> None:
     except Exception:
         pass
 
+    # ★クラウドでの初期化失敗対策：月セレクタを「別月→現在月」とガチャしてデータ強制再ロード
+    try:
+        cur_month = TODAY.month
+        prev_month = 12 if cur_month == 1 else cur_month - 1
+        selects = page.locator('select').all()
+        for s in selects:
+            try:
+                opts = s.locator('option').all_inner_texts()
+                if any(o.strip() in {f"{i}月" for i in range(1, 13)} for o in opts):
+                    s.select_option(label=f"{prev_month}月")
+                    page.wait_for_timeout(3000)
+                    s.select_option(label=f"{cur_month}月")
+                    page.wait_for_timeout(5000)
+                    print(f"  DEBUG: month re-toggled {prev_month}月→{cur_month}月", file=sys.stderr)
+                    break
+            except Exception:
+                continue
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        print(f"  WARN: month re-toggle skipped: {e}", file=sys.stderr)
+
 
 def parse_survey_rows(page: Page) -> List[SurveyAnswer]:
     body_text = page.locator("body").inner_text()
