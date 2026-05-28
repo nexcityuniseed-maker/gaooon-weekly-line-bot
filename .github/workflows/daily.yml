@@ -2,9 +2,9 @@ name: GaoooN 週次レポート → LINE配信
 
 on:
   schedule:
-    # 毎週月曜 JST 09:00 = 日曜 UTC 00:00
-    # cron書式は分 時 日 月 曜日（UTC基準、0=日曜）
-    - cron: "0 0 * * 1"
+    # 毎週月曜 JST 11:00 = 月曜 UTC 02:00
+    # cron書式は分 時 日 月 曜日（UTC基準、0=日曜、1=月曜）
+    - cron: "0 2 * * 1"
   workflow_dispatch:
     inputs:
       mode:
