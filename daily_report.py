@@ -156,17 +156,61 @@ def open_survey_result_page(page: Page, location: str) -> None:
     page.wait_for_timeout(7000)  # ★タブ切替→テーブル再描画待ち（クラウド遅延対策）
 
     # 「満足度の高い回答」→クリックで「低い回答」に切り替わるトグル
+    # クラウドのヘッドレス環境ではclickが効かないケースがあるため、複数手段でフォールバック
     toggled = False
+
+    # 試行1: Playwright標準click（visible判定あり）
     for sel in ['text=満足度の高い回答', '[role="button"]:has-text("満足度")']:
         try:
             btn = page.locator(sel).first
             if btn.is_visible():
                 btn.click()
-                page.wait_for_timeout(7000)  # ★フィルタ切替→再ロード待ち
+                page.wait_for_timeout(7000)
                 toggled = True
                 break
         except Exception:
             continue
+
+    # 試行2: force=Trueクリック（visibility判定スキップ）
+    if not toggled:
+        try:
+            page.locator('text=満足度の高い回答').first.click(force=True, timeout=5000)
+            page.wait_for_timeout(7000)
+            toggled = True
+        except Exception:
+            pass
+
+    # 試行3: JavaScript で直接DOMクリック（テキストノードを親ボタンまで遡って .click()）
+    if not toggled:
+        try:
+            page.evaluate("""() => {
+                const els = Array.from(document.querySelectorAll('*'));
+                for (const el of els) {
+                    if (el.children.length === 0 && el.textContent &&
+                        el.textContent.trim() === '満足度の高い回答') {
+                        let p = el;
+                        for (let i = 0; i < 6 && p; i++) {
+                            p.click();
+                            p = p.parentElement;
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            }""")
+            page.wait_for_timeout(7000)
+            toggled = True
+        except Exception:
+            pass
+
+    # 切り替え結果を確認：本文に「満足度の低い回答」が出ているはず
+    try:
+        confirmed = page.evaluate(
+            "() => document.body.innerText.includes('満足度の低い回答')"
+        )
+        print(f"  DEBUG: filter toggled={toggled}, confirmed_low={confirmed}", file=sys.stderr)
+    except Exception:
+        pass
 
     if not toggled:
         print("  WARN: 満足度フィルタ切替に失敗", file=sys.stderr)
