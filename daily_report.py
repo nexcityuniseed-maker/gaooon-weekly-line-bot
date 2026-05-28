@@ -270,6 +270,13 @@ def collect_for_store(page: Page, store: dict,
                 path=str(debug_dir / f"02_survey_{location}.png"), full_page=True
             )
         data.surveys_low = parse_survey_rows(page)
+        # 0件のときは描画失敗の可能性 → 待機してリトライ（クラウド環境向け）
+        for retry_i in range(2):
+            if data.surveys_low:
+                break
+            print(f"  [{store['name']}] 0件→リトライ {retry_i+1}/2", file=sys.stderr)
+            page.wait_for_timeout(6000)
+            data.surveys_low = parse_survey_rows(page)
         print(f"  [{store['name']}] 低評価アンケート: {len(data.surveys_low)} 件",
               file=sys.stderr)
 
