@@ -59,12 +59,13 @@ jobs:
           SEND_MODE: ${{ github.event.inputs.mode || 'send' }}
         run: python daily_report.py
 
-      - name: 失敗時のスクリーンショット保存（あれば）
-        if: failure()
+      - name: デバッグスクショ保存（常時、dry-runデバッグ用）
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: failure-screenshot
+          name: debug-screenshots
           path: |
             *.png
+            debug/
             playwright-report/
-          retention-days: 7
+          retention-days: 3
