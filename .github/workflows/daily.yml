@@ -6,7 +6,14 @@ on:
     # cron書式は分 時 日 月 曜日（UTC基準、0=日曜）
     - cron: "0 0 * * 1"
   workflow_dispatch:
-    # 手動実行も可能（GitHubの「Actions」タブから "Run workflow"）
+    inputs:
+      mode:
+        description: "実行モード（dry-run=LINE送信せず件数確認のみ／send=本番送信）"
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - send
 
 permissions:
   contents: read
@@ -48,7 +55,8 @@ jobs:
           LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
           # STORE_LOCATION 未指定なら 5 店舗全部ループ実行（vars に値があるとそれ1店舗に絞り込み）
           STORE_LOCATION: ${{ vars.STORE_LOCATION }}
-          SEND_MODE: send
+          # cron実行時は send、手動実行時はUIで選んだmode（デフォルトdry-run）
+          SEND_MODE: ${{ github.event.inputs.mode || 'send' }}
         run: python daily_report.py
 
       - name: 失敗時のスクリーンショット保存（あれば）
