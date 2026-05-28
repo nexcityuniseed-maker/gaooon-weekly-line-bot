@@ -46,8 +46,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
-          STORE_LOCATION: ${{ vars.STORE_LOCATION || 'chukasobanito_nagoya' }}
-          STORE_NAME: ${{ vars.STORE_NAME || '中華そば二兎' }}
+          # STORE_LOCATION 未指定なら 5 店舗全部ループ実行（vars に値があるとそれ1店舗に絞り込み）
+          STORE_LOCATION: ${{ vars.STORE_LOCATION }}
           SEND_MODE: send
         run: python daily_report.py
 
