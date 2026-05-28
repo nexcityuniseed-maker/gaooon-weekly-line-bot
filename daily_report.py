@@ -391,7 +391,13 @@ def collect_all(stores: list, headless: bool = True,
     results = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        ctx = browser.new_context(viewport={"width": 1400, "height": 900}, locale="ja-JP")
+        ctx = browser.new_context(
+            viewport={"width": 1400, "height": 900},
+            locale="ja-JP",
+            timezone_id="Asia/Tokyo",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
         page = ctx.new_page()
         try:
             login(page)
