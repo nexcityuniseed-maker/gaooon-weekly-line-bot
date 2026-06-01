@@ -46,6 +46,21 @@ jobs:
         run: |
           python -m playwright install --with-deps chromium
 
+      # 二重送信ガード：対象週(先週月曜)をキーに送信済みマーカーをキャッシュ。
+      # cronの遅延二重発火や手動送信との重複時、2回目以降は送信スキップされる。
+      - name: 対象週キーを算出
+        id: weekkey
+        run: |
+          WS=$(python -c "import datetime; t=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).date(); print((t-datetime.timedelta(days=t.weekday()+7)).isoformat())")
+          echo "ws=$WS" >> "$GITHUB_OUTPUT"
+          echo "report week_start=$WS"
+
+      - name: 送信済みマーカーを復元/保存（週キー）
+        uses: actions/cache@v4
+        with:
+          path: .last_sent.json
+          key: sent-${{ steps.weekkey.outputs.ws }}
+
       - name: 日次レポート実行 → LINE配信
         env:
           GAOOON_EMAIL: ${{ secrets.GAOOON_EMAIL }}
