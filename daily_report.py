@@ -129,18 +129,40 @@ class CollectedData:
 # Playwright スクレイピング
 # ------------------------------------------------------------------
 def login(page: Page) -> None:
-    page.goto(LOGIN_URL, wait_until="domcontentloaded")
-    page.wait_for_selector('input[type="email"]', timeout=15000)
-    page.fill('input[type="email"]', GAOOON_EMAIL)
-    page.fill('input[type="password"]', GAOOON_PASSWORD)
-    page.locator('button:has-text("ログイン")').first.click()
-    page.wait_for_function("() => !location.pathname.includes('/login')", timeout=20000)
-    page.wait_for_load_state("networkidle", timeout=15000)
+    # GaoooN(Bubble)はサイトが重いとログインの各段階でタイムアウトすることがある。
+    # ログイン一連（goto→入力→送信→遷移）をまとめて複数回リトライする。
+    last_err = None
+    for attempt in range(1, 5):
+        try:
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector('input[type="email"]', timeout=30000)
+            page.fill('input[type="email"]', GAOOON_EMAIL)
+            page.fill('input[type="password"]', GAOOON_PASSWORD)
+            page.locator('button:has-text("ログイン")').first.click()
+            page.wait_for_function(
+                "() => !location.pathname.includes('/login')", timeout=30000)
+            # networkidle は Bubble の常時通信で到達しないことがある。ログイン成功は
+            # 上のURL判定で確認済みなので settle待ちは best-effort。
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                page.wait_for_timeout(3000)
+            return
+        except Exception as e:
+            last_err = e
+            print(f"  WARN: ログインリトライ {attempt}/4 ({e.__class__.__name__})",
+                  file=sys.stderr)
+            page.wait_for_timeout(8000)  # サイト回復待ち
+    raise last_err
 
 
 def open_survey_result_page(page: Page, location: str) -> None:
-    page.goto(survey_url(location), wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=30000)
+    page.goto(survey_url(location), wait_until="domcontentloaded", timeout=60000)
+    # networkidle 未到達でも後続の明示待機でカバーするため best-effort
+    try:
+        page.wait_for_load_state("networkidle", timeout=30000)
+    except Exception:
+        pass
     page.wait_for_timeout(4000)  # ★Bubbleの初期描画は重め
 
     # 「アンケート結果」タブ（ヘッダー部にあるボタン）をクリック
