@@ -622,7 +622,8 @@ def _build_kpi_card(struct: dict, store_name: str, today_label: str) -> dict:
     kpi = struct.get("kpi", {}) or {}
     survey_n = kpi.get("survey_low_count", 0)
     review_n = kpi.get("review_low_count", 0)
-    sat_pct = kpi.get("satisfaction_rate_pct", 0)
+    # 満足率は「満足度の低い回答」しか取得していないため正確に算出できず
+    # 0%/100% のノイズになるため非表示（誤解防止）
     comment = kpi.get("comment_one_line", "")
 
     alert_total = survey_n + review_n
@@ -681,16 +682,6 @@ def _build_kpi_card(struct: dict, store_name: str, today_label: str) -> dict:
                                 _txt("★3↓", size="xxs", color="#a3293a"),
                                 _txt(str(review_n), size="xxl", color="#a3293a", weight="bold"),
                                 _txt("クチコミ", size="xxs", color="#6c7280"),
-                            ]
-                        },
-                        {
-                            "type": "box", "layout": "vertical", "flex": 1,
-                            "backgroundColor": "#e3f3ec", "cornerRadius": "8px",
-                            "paddingAll": "10px",
-                            "contents": [
-                                _txt("満足率", size="xxs", color="#1f7a4f"),
-                                _txt(f"{sat_pct}", size="xxl", color="#1f7a4f", weight="bold"),
-                                _txt("％", size="xxs", color="#6c7280"),
                             ]
                         },
                     ]
