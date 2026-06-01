@@ -47,6 +47,8 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 LINE_GROUP_ID = os.getenv("LINE_GROUP_ID", "").strip()  # 設定があれば push、無ければ broadcast
 SEND_MODE = os.getenv("SEND_MODE", "dry-run").strip().lower()
+# 同じ対象週の二重送信ガードを無視して強制送信する（意図的な再送用）
+FORCE_SEND = os.getenv("FORCE_SEND", "").strip().lower() in ("1", "true", "yes")
 
 # 対象店舗リスト（BWC社の上位5店舗）
 STORES = [
@@ -91,6 +93,39 @@ def months_in_range(start, end) -> List[tuple]:
 
 # 対象週がまたぐ (年, 月)。GaoooN セレクタはこれを順に選ぶ（当月ではない）
 REPORT_MONTHS = months_in_range(WEEK_START, WEEK_END)
+
+# ------------------------------------------------------------------
+# 二重送信ガード（対象週キーの送信済みマーカー）
+# ------------------------------------------------------------------
+# 同じ対象週のレポートを複数回送らないためのマーカー。
+# ・ローカル：このファイルがそのまま残る
+# ・GitHub Actions：actions/cache で週キーごとに永続化（cron遅延の二重発火や
+#   手動送信との重複を防ぐ）
+# FORCE_SEND=1 で無視して強制送信できる。
+_SENT_MARKER = Path(__file__).resolve().parent / ".last_sent.json"
+
+
+def already_sent_this_week() -> bool:
+    """対象週のレポートが既に送信済みか（マーカーの week_start が一致するか）"""
+    try:
+        import json as _json
+        data = _json.loads(_SENT_MARKER.read_text(encoding="utf-8"))
+        return data.get("week_start") == WEEK_START.isoformat()
+    except Exception:
+        return False
+
+
+def record_sent_this_week() -> None:
+    """対象週を送信済みとして記録する"""
+    try:
+        import json as _json
+        _SENT_MARKER.write_text(_json.dumps({
+            "week_start": WEEK_START.isoformat(),
+            "week_label": WEEK_LABEL,
+            "sent_at": datetime.now(JST).isoformat(),
+        }, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"  WARN: 送信済みマーカー記録に失敗: {e}", file=sys.stderr)
 
 
 # ------------------------------------------------------------------
@@ -1020,6 +1055,12 @@ def main() -> int:
         print("ERROR: ANTHROPIC_API_KEY が未設定", file=sys.stderr)
         return 3
 
+    # 二重送信ガード：同じ対象週を既に送信済みならスキップ（cron遅延×手動の重複防止）
+    if SEND_MODE == "send" and already_sent_this_week() and not FORCE_SEND:
+        print(f"  SKIP: 対象週 {WEEK_LABEL} は既に送信済み（再送は FORCE_SEND=1）。"
+              "今回は配信しません。", file=sys.stderr)
+        return 0
+
     # 1. データ取得（1セッションで全店舗）
     print("\n[1/3] GaoooN からデータ取得中...", file=sys.stderr)
     headless = SEND_MODE != "headed"
@@ -1063,6 +1104,11 @@ def main() -> int:
             print(f"  （ドライラン）", file=sys.stderr)
             print(f"--- {name} Flex JSON ---")
             print(json.dumps(flex_msg, ensure_ascii=False, indent=2))
+
+    # 全店送信成功なら対象週を送信済みとして記録（次回以降の二重送信を防ぐ）
+    if SEND_MODE == "send" and exit_code == 0:
+        record_sent_this_week()
+        print(f"  対象週 {WEEK_LABEL} を送信済みとして記録", file=sys.stderr)
 
     print(f"\n[完了] exit code={exit_code}", file=sys.stderr)
     return exit_code

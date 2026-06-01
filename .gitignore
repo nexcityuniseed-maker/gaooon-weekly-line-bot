@@ -8,3 +8,4 @@ test-results/
 debug/
 *.log
 .DS_Store
+.last_sent.json
