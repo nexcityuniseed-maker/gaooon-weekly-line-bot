@@ -77,6 +77,22 @@ WEEK_END = WEEK_START + timedelta(days=6)       # 先週日曜
 WEEK_LABEL = f"{WEEK_START.strftime('%-m/%-d')}〜{WEEK_END.strftime('%-m/%-d')}"
 
 
+def months_in_range(start, end) -> List[tuple]:
+    """start..end が跨ぐ (年, 月) を昇順で返す。
+    GaoooN の年/月セレクタは当月固定ではなく "対象週の月" を選ぶ必要がある。
+    通常は1要素、月初の月曜（先週が前月）や月境界週では2要素になる。"""
+    out: List[tuple] = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        out.append((y, m))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+# 対象週がまたぐ (年, 月)。GaoooN セレクタはこれを順に選ぶ（当月ではない）
+REPORT_MONTHS = months_in_range(WEEK_START, WEEK_END)
+
+
 # ------------------------------------------------------------------
 # データ構造
 # ------------------------------------------------------------------
@@ -113,18 +129,40 @@ class CollectedData:
 # Playwright スクレイピング
 # ------------------------------------------------------------------
 def login(page: Page) -> None:
-    page.goto(LOGIN_URL, wait_until="domcontentloaded")
-    page.wait_for_selector('input[type="email"]', timeout=15000)
-    page.fill('input[type="email"]', GAOOON_EMAIL)
-    page.fill('input[type="password"]', GAOOON_PASSWORD)
-    page.locator('button:has-text("ログイン")').first.click()
-    page.wait_for_function("() => !location.pathname.includes('/login')", timeout=20000)
-    page.wait_for_load_state("networkidle", timeout=15000)
+    # GaoooN(Bubble)はサイトが重いとログインの各段階でタイムアウトすることがある。
+    # ログイン一連（goto→入力→送信→遷移）をまとめて複数回リトライする。
+    last_err = None
+    for attempt in range(1, 5):
+        try:
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector('input[type="email"]', timeout=30000)
+            page.fill('input[type="email"]', GAOOON_EMAIL)
+            page.fill('input[type="password"]', GAOOON_PASSWORD)
+            page.locator('button:has-text("ログイン")').first.click()
+            page.wait_for_function(
+                "() => !location.pathname.includes('/login')", timeout=30000)
+            # networkidle は Bubble の常時通信で到達しないことがある。ログイン成功は
+            # 上のURL判定で確認済みなので settle待ちは best-effort。
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                page.wait_for_timeout(3000)
+            return
+        except Exception as e:
+            last_err = e
+            print(f"  WARN: ログインリトライ {attempt}/4 ({e.__class__.__name__})",
+                  file=sys.stderr)
+            page.wait_for_timeout(8000)  # サイト回復待ち
+    raise last_err
 
 
 def open_survey_result_page(page: Page, location: str) -> None:
-    page.goto(survey_url(location), wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=30000)
+    page.goto(survey_url(location), wait_until="domcontentloaded", timeout=60000)
+    # networkidle 未到達でも後続の明示待機でカバーするため best-effort
+    try:
+        page.wait_for_load_state("networkidle", timeout=30000)
+    except Exception:
+        pass
     page.wait_for_timeout(4000)  # ★Bubbleの初期描画は重め
 
     # 「アンケート結果」タブ（ヘッダー部にあるボタン）をクリック
@@ -155,19 +193,77 @@ def open_survey_result_page(page: Page, location: str) -> None:
 
     page.wait_for_timeout(7000)  # ★タブ切替→テーブル再描画待ち（クラウド遅延対策）
 
-    # 「満足度の高い回答」→クリックで「低い回答」に切り替わるトグル
-    # クラウドのヘッドレス環境ではclickが効かないケースがあるため、複数手段でフォールバック
-    # 切り替え成功の判定は「データ行が再描画される」ことで行う
 
-    def has_low_data():
-        """満足度の低い回答テーブルに日付付きの行が出現したか"""
+# 日付付きデータ行（例: 2026年 5月 31日 (土) 14:30）が本文に存在するか判定するJS
+_DATE_ROW_JS = (
+    "() => /\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日\\s*"
+    "\\([日月火水木金土]\\)\\s*\\d{1,2}:\\d{2}/.test(document.body.innerText)"
+)
+
+
+def _select_year_month(page: Page, year: int, month: int) -> None:
+    """年/月セレクタを対象期間（先週）に合わせる。
+    ページ初期表示は当月固定なので、対象週が前月にある月初の月曜などでは
+    明示的に対象月へ切り替える必要がある（これを怠ると 0件 になる）。
+    Bubbleはセレクタ変更でデータを非同期再描画するため、"別月→対象月" の
+    ガチャ操作で確実に再ロードさせる（クラウドの初期化失敗対策も兼ねる）。"""
+    selects = page.locator('select').all()
+    year_sel = None
+    month_sel = None
+    for s in selects:
         try:
-            return page.evaluate(
-                "() => /\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日\\s*\\([日月火水木金土]\\)\\s*\\d{1,2}:\\d{2}/.test(document.body.innerText)"
-            )
+            opts = [o.strip() for o in s.locator('option').all_inner_texts()]
         except Exception:
-            return False
+            continue
+        if year_sel is None and any(re.fullmatch(r"\d{4}年", o) for o in opts):
+            year_sel = s
+        if month_sel is None and any(o in {f"{i}月" for i in range(1, 13)} for o in opts):
+            month_sel = s
 
+    if year_sel is not None:
+        # 年はデフォルトで当年が選択済みのため通常は変更不要。
+        # 年境界週（1月の先週が前年12月）でのみ必要。短いtimeoutでfail-fastさせ、
+        # 失敗してもガチャ後の月選択は継続する（当年内ならこれで支障なし）。
+        try:
+            year_sel.select_option(label=f"{year}年", timeout=6000)
+            page.wait_for_timeout(2500)
+        except Exception as e:
+            print(f"  WARN: 年セレクタ設定失敗 {year}年: {e.__class__.__name__}", file=sys.stderr)
+
+    if month_sel is not None:
+        decoy = 12 if month == 1 else month - 1  # 対象月と異なれば再ロードを誘発できる
+        try:
+            month_sel.select_option(label=f"{decoy}月")
+            page.wait_for_timeout(3000)
+        except Exception:
+            pass
+        try:
+            month_sel.select_option(label=f"{month}月")
+            page.wait_for_timeout(5000)
+            print(f"  DEBUG: 年月設定 {year}年{month}月（ガチャ {decoy}月→{month}月）",
+                  file=sys.stderr)
+        except Exception as e:
+            print(f"  WARN: 月セレクタ設定失敗 {month}月: {e.__class__.__name__}", file=sys.stderr)
+    else:
+        print("  WARN: 月セレクタが見つからない", file=sys.stderr)
+
+    # データ行 or 「0件」表示が安定するまで待つ（行が無い月もあるので0件もOK）
+    try:
+        page.wait_for_function(
+            "() => document.body.innerText.match(/\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日/) "
+            "|| /0件/.test(document.body.innerText)",
+            timeout=15000,
+        )
+    except Exception:
+        pass
+
+
+def _apply_low_filter(page: Page) -> None:
+    """「満足度の高い回答」→クリックで「低い回答」に切り替えるトグル。
+    クラウドのヘッドレスではclickが効かないことがあるため複数手段でフォールバック。
+    切替成功は「データ行が再描画される」ことで判定する。
+    ※必ず _select_year_month で対象月を選んでから呼ぶこと（データの無い月で
+    トグルしても切替判定ができないため）。"""
     toggle_methods = []
 
     def try_standard_click():
@@ -217,55 +313,19 @@ def open_survey_result_page(page: Page, location: str) -> None:
     for attempt_name, fn in [("standard", try_standard_click), ("force", try_force_click), ("js", try_js_click)]:
         res = fn()
         toggle_methods.append(f"{attempt_name}={res}")
-        # クリック後にデータが出るまで最大15秒待つ
         try:
-            page.wait_for_function(
-                "() => /\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日\\s*\\([日月火水木金土]\\)\\s*\\d{1,2}:\\d{2}/.test(document.body.innerText)",
-                timeout=15000
-            )
-            print(f"  DEBUG: filter toggle ok via [{attempt_name}] / methods={toggle_methods}", file=sys.stderr)
+            page.wait_for_function(_DATE_ROW_JS, timeout=15000)
+            print(f"  DEBUG: filter toggle ok via [{attempt_name}] / methods={toggle_methods}",
+                  file=sys.stderr)
             break
         except Exception:
             continue
     else:
+        # 対象月に低評価が無ければ正常に0件のこともある（必ずしもエラーではない）
         print(f"  WARN: filter toggle all-failed / methods={toggle_methods}", file=sys.stderr)
 
     page.wait_for_load_state("networkidle", timeout=15000)
     page.wait_for_timeout(2000)
-
-    page.wait_for_load_state("networkidle", timeout=20000)
-    page.wait_for_timeout(3000)
-
-    # データテーブルが描画されるまで明示待機（行が出るまで or 上限15秒）
-    try:
-        page.wait_for_function(
-            "() => document.body.innerText.match(/\\d{4}年\\s*\\d{1,2}月\\s*\\d{1,2}日/) "
-            "|| document.body.innerText.includes('回答数')",
-            timeout=15000
-        )
-    except Exception:
-        pass
-
-    # ★クラウドでの初期化失敗対策：月セレクタを「別月→現在月」とガチャしてデータ強制再ロード
-    try:
-        cur_month = TODAY.month
-        prev_month = 12 if cur_month == 1 else cur_month - 1
-        selects = page.locator('select').all()
-        for s in selects:
-            try:
-                opts = s.locator('option').all_inner_texts()
-                if any(o.strip() in {f"{i}月" for i in range(1, 13)} for o in opts):
-                    s.select_option(label=f"{prev_month}月")
-                    page.wait_for_timeout(3000)
-                    s.select_option(label=f"{cur_month}月")
-                    page.wait_for_timeout(5000)
-                    print(f"  DEBUG: month re-toggled {prev_month}月→{cur_month}月", file=sys.stderr)
-                    break
-            except Exception:
-                continue
-        page.wait_for_timeout(2000)
-    except Exception as e:
-        print(f"  WARN: month re-toggle skipped: {e}", file=sys.stderr)
 
 
 def parse_survey_rows(page: Page) -> List[SurveyAnswer]:
@@ -308,9 +368,43 @@ def parse_survey_rows(page: Page) -> List[SurveyAnswer]:
 
 
 def open_google_reviews_tab(page: Page) -> None:
-    page.locator('text=Googleクチコミ').first.click()
+    """「Googleクチコミ」タブに切り替える。
+    'Googleクチコミ' は説明文（「店舗評価アンケートの結果とGoogleクチコミで…」）にも
+    含まれるため、text=... の .first だと説明文をクリックしてしまいタブが切り替わらない
+    （＝従来バグ。アンケートのデータを再取得してしまっていた）。
+    タブボタン（表示中・画面上部・テキスト完全一致）を狙ってクリックする。"""
+    clicked = False
+    elems = page.locator('text=Googleクチコミ')
+    for i in range(elems.count()):
+        try:
+            el = elems.nth(i)
+            if not el.is_visible():
+                continue
+            if (el.inner_text() or "").strip() != "Googleクチコミ":
+                continue  # 長い説明文を除外し、タブのみ対象に
+            box = el.bounding_box()
+            if box and box["y"] < 350:
+                el.click()
+                clicked = True
+                break
+        except Exception:
+            continue
+    if not clicked:
+        try:
+            page.locator('text=Googleクチコミ').first.click()  # フォールバック
+        except Exception:
+            print("  WARN: Googleクチコミタブが見つからない", file=sys.stderr)
     page.wait_for_timeout(6000)  # ★クチコミタブの描画待ち
     page.wait_for_load_state("networkidle", timeout=20000)
+    # 切替確認：クチコミ一覧の出現 or アンケート見出しの消滅
+    try:
+        page.wait_for_function(
+            "() => document.body.innerText.includes('Googleクチコミ一覧') "
+            "|| !document.body.innerText.includes('店舗評価アンケート結果')",
+            timeout=10000,
+        )
+    except Exception:
+        print("  WARN: Googleクチコミタブ切替を確認できず", file=sys.stderr)
     page.wait_for_timeout(2000)
 
 
@@ -330,12 +424,17 @@ def parse_google_reviews(page: Page) -> List[GoogleReview]:
         if not lines:
             continue
         author = lines[0].strip()
-        body_text = "\n".join(lines[1:]).strip()
+        # 評価は Font Awesome の星グリフ(U+F005)で表示される。出現数=星数。
+        # 星グリフだけの行はコメントから除外する。
+        STAR = "\uf005"
+        stars = "\n".join(lines[1:]).count(STAR)
+        comment_lines = [l for l in lines[1:] if l.strip(STAR + "\u2606\u2605 ").strip()]
+        body_text = "\n".join(comment_lines).strip().strip(STAR).strip()
         body_text = re.sub(
             r'(前ページ|次ページ|first_page|last_page|chevron_\w+|\d+/\d+).*',
             '', body_text, flags=re.DOTALL
         ).strip()
-        reviews.append(GoogleReview(timestamp=ts, author=author, stars=0, text=body_text))
+        reviews.append(GoogleReview(timestamp=ts, author=author, stars=stars, text=body_text))
         if len(reviews) >= 50:
             break
     return reviews
@@ -348,18 +447,34 @@ def collect_for_store(page: Page, store: dict,
     location = store["location"]
     try:
         open_survey_result_page(page, location)
-        if debug_dir:
-            page.screenshot(
-                path=str(debug_dir / f"02_survey_{location}.png"), full_page=True
-            )
-        data.surveys_low = parse_survey_rows(page)
-        # 0件のときは描画失敗の可能性 → 待機してリトライ（クラウド環境向け）
-        for retry_i in range(2):
-            if data.surveys_low:
-                break
-            print(f"  [{store['name']}] 0件→リトライ {retry_i+1}/2", file=sys.stderr)
-            page.wait_for_timeout(6000)
-            data.surveys_low = parse_survey_rows(page)
+        # 対象週がまたぐ各 (年, 月) を順に開いて低評価アンケートを収集
+        collected: List[SurveyAnswer] = []
+        for (yy, mm) in REPORT_MONTHS:
+            _select_year_month(page, yy, mm)
+            _apply_low_filter(page)
+            rows = parse_survey_rows(page)
+            # 0件のときは描画失敗の可能性 → 待機してリトライ（クラウド環境向け）
+            for retry_i in range(2):
+                if rows:
+                    break
+                print(f"  [{store['name']}] {yy}年{mm}月 0件→リトライ {retry_i+1}/2",
+                      file=sys.stderr)
+                page.wait_for_timeout(6000)
+                rows = parse_survey_rows(page)
+            print(f"  [{store['name']}] {yy}年{mm}月: {len(rows)} 件", file=sys.stderr)
+            if debug_dir:
+                page.screenshot(
+                    path=str(debug_dir / f"02_survey_{location}_{yy}{mm:02d}.png"),
+                    full_page=True,
+                )
+            collected.extend(rows)
+        # timestamp 重複を除去（月境界週で同一行が両月に出ることはないが念のため）
+        seen = set()
+        data.surveys_low = []
+        for a in collected:
+            if a.timestamp not in seen:
+                seen.add(a.timestamp)
+                data.surveys_low.append(a)
         print(f"  [{store['name']}] 低評価アンケート: {len(data.surveys_low)} 件",
               file=sys.stderr)
 
@@ -369,9 +484,11 @@ def collect_for_store(page: Page, store: dict,
                 path=str(debug_dir / f"03_reviews_{location}.png"), full_page=True
             )
         all_reviews = parse_google_reviews(page)
-        print(f"  [{store['name']}] Google クチコミ: {len(all_reviews)} 件",
-              file=sys.stderr)
-        data.reviews_low = [r for r in all_reviews if r.text and len(r.text) > 20]
+        # ★3↓（星1〜3）の低評価クチコミのみ抽出。星はグリフ数から取得済み。
+        low_reviews = [r for r in all_reviews if 1 <= r.stars <= 3]
+        print(f"  [{store['name']}] Google クチコミ: 取得{len(all_reviews)}件 / "
+              f"★3↓ {len(low_reviews)}件", file=sys.stderr)
+        data.reviews_low = low_reviews
     except Exception as e:
         print(f"  ERROR [{store['name']}]: {e}", file=sys.stderr)
         if debug_dir:
@@ -426,9 +543,14 @@ def summarize_to_struct(data: CollectedData) -> dict:
         for a in data.surveys_low
     ]) or "(該当なし)"
 
-    reviews_text = "\n\n".join([
-        f"▼{r.timestamp} {r.author}\n{r.text}" for r in data.reviews_low[:30]
-    ]) or "(該当なし)"
+    def _fmt_review(r):
+        ts = re.sub(r"\s+", " ", r.timestamp)
+        body = r.text if r.text else "(コメントなし)"
+        return f"▼{ts} ★{r.stars} {r.author}\n{body}"
+
+    reviews_text = "\n\n".join(
+        _fmt_review(r) for r in data.reviews_low[:30]
+    ) or "(該当なし)"
 
     prompt = f"""あなたはラーメン店「{data.store_name}」の店舗運営者向け週次レポートを作るアシスタントです。
 対象期間: {WEEK_LABEL}（先週月曜〜日曜）
@@ -568,7 +690,8 @@ def _build_kpi_card(struct: dict, store_name: str, today_label: str) -> dict:
     kpi = struct.get("kpi", {}) or {}
     survey_n = kpi.get("survey_low_count", 0)
     review_n = kpi.get("review_low_count", 0)
-    sat_pct = kpi.get("satisfaction_rate_pct", 0)
+    # 満足率は「満足度の低い回答」しか取得していないため正確に算出できず
+    # 0%/100% のノイズになるため非表示（誤解防止）
     comment = kpi.get("comment_one_line", "")
 
     alert_total = survey_n + review_n
@@ -627,16 +750,6 @@ def _build_kpi_card(struct: dict, store_name: str, today_label: str) -> dict:
                                 _txt("★3↓", size="xxs", color="#a3293a"),
                                 _txt(str(review_n), size="xxl", color="#a3293a", weight="bold"),
                                 _txt("クチコミ", size="xxs", color="#6c7280"),
-                            ]
-                        },
-                        {
-                            "type": "box", "layout": "vertical", "flex": 1,
-                            "backgroundColor": "#e3f3ec", "cornerRadius": "8px",
-                            "paddingAll": "10px",
-                            "contents": [
-                                _txt("満足率", size="xxs", color="#1f7a4f"),
-                                _txt(f"{sat_pct}", size="xxl", color="#1f7a4f", weight="bold"),
-                                _txt("％", size="xxs", color="#6c7280"),
                             ]
                         },
                     ]
