@@ -346,9 +346,43 @@ def parse_survey_rows(page: Page) -> List[SurveyAnswer]:
 
 
 def open_google_reviews_tab(page: Page) -> None:
-    page.locator('text=Googleクチコミ').first.click()
+    """「Googleクチコミ」タブに切り替える。
+    'Googleクチコミ' は説明文（「店舗評価アンケートの結果とGoogleクチコミで…」）にも
+    含まれるため、text=... の .first だと説明文をクリックしてしまいタブが切り替わらない
+    （＝従来バグ。アンケートのデータを再取得してしまっていた）。
+    タブボタン（表示中・画面上部・テキスト完全一致）を狙ってクリックする。"""
+    clicked = False
+    elems = page.locator('text=Googleクチコミ')
+    for i in range(elems.count()):
+        try:
+            el = elems.nth(i)
+            if not el.is_visible():
+                continue
+            if (el.inner_text() or "").strip() != "Googleクチコミ":
+                continue  # 長い説明文を除外し、タブのみ対象に
+            box = el.bounding_box()
+            if box and box["y"] < 350:
+                el.click()
+                clicked = True
+                break
+        except Exception:
+            continue
+    if not clicked:
+        try:
+            page.locator('text=Googleクチコミ').first.click()  # フォールバック
+        except Exception:
+            print("  WARN: Googleクチコミタブが見つからない", file=sys.stderr)
     page.wait_for_timeout(6000)  # ★クチコミタブの描画待ち
     page.wait_for_load_state("networkidle", timeout=20000)
+    # 切替確認：クチコミ一覧の出現 or アンケート見出しの消滅
+    try:
+        page.wait_for_function(
+            "() => document.body.innerText.includes('Googleクチコミ一覧') "
+            "|| !document.body.innerText.includes('店舗評価アンケート結果')",
+            timeout=10000,
+        )
+    except Exception:
+        print("  WARN: Googleクチコミタブ切替を確認できず", file=sys.stderr)
     page.wait_for_timeout(2000)
 
 
@@ -368,12 +402,17 @@ def parse_google_reviews(page: Page) -> List[GoogleReview]:
         if not lines:
             continue
         author = lines[0].strip()
-        body_text = "\n".join(lines[1:]).strip()
+        # 評価は Font Awesome の星グリフ(U+F005)で表示される。出現数=星数。
+        # 星グリフだけの行はコメントから除外する。
+        STAR = "\uf005"
+        stars = "\n".join(lines[1:]).count(STAR)
+        comment_lines = [l for l in lines[1:] if l.strip(STAR + "\u2606\u2605 ").strip()]
+        body_text = "\n".join(comment_lines).strip().strip(STAR).strip()
         body_text = re.sub(
             r'(前ページ|次ページ|first_page|last_page|chevron_\w+|\d+/\d+).*',
             '', body_text, flags=re.DOTALL
         ).strip()
-        reviews.append(GoogleReview(timestamp=ts, author=author, stars=0, text=body_text))
+        reviews.append(GoogleReview(timestamp=ts, author=author, stars=stars, text=body_text))
         if len(reviews) >= 50:
             break
     return reviews
@@ -423,9 +462,11 @@ def collect_for_store(page: Page, store: dict,
                 path=str(debug_dir / f"03_reviews_{location}.png"), full_page=True
             )
         all_reviews = parse_google_reviews(page)
-        print(f"  [{store['name']}] Google クチコミ: {len(all_reviews)} 件",
-              file=sys.stderr)
-        data.reviews_low = [r for r in all_reviews if r.text and len(r.text) > 20]
+        # ★3↓（星1〜3）の低評価クチコミのみ抽出。星はグリフ数から取得済み。
+        low_reviews = [r for r in all_reviews if 1 <= r.stars <= 3]
+        print(f"  [{store['name']}] Google クチコミ: 取得{len(all_reviews)}件 / "
+              f"★3↓ {len(low_reviews)}件", file=sys.stderr)
+        data.reviews_low = low_reviews
     except Exception as e:
         print(f"  ERROR [{store['name']}]: {e}", file=sys.stderr)
         if debug_dir:
@@ -480,9 +521,14 @@ def summarize_to_struct(data: CollectedData) -> dict:
         for a in data.surveys_low
     ]) or "(該当なし)"
 
-    reviews_text = "\n\n".join([
-        f"▼{r.timestamp} {r.author}\n{r.text}" for r in data.reviews_low[:30]
-    ]) or "(該当なし)"
+    def _fmt_review(r):
+        ts = re.sub(r"\s+", " ", r.timestamp)
+        body = r.text if r.text else "(コメントなし)"
+        return f"▼{ts} ★{r.stars} {r.author}\n{body}"
+
+    reviews_text = "\n\n".join(
+        _fmt_review(r) for r in data.reviews_low[:30]
+    ) or "(該当なし)"
 
     prompt = f"""あなたはラーメン店「{data.store_name}」の店舗運営者向け週次レポートを作るアシスタントです。
 対象期間: {WEEK_LABEL}（先週月曜〜日曜）
