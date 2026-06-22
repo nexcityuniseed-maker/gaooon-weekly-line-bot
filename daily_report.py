@@ -1009,6 +1009,271 @@ def build_flex_message(struct: dict, store_name: str, store_location: str) -> di
     }
 
 
+# ----- 明細項目ビルダー（カード本文に差し込むコンポーネント配列を返す）-----
+def _survey_alert_items(alerts: list, limit: int = 4) -> list:
+    items = []
+    for i, a in enumerate(alerts[:limit]):
+        if i > 0:
+            items.append(_sep("md"))
+        items.append(_txt(f"{a.get('ts','')}  {a.get('who','')}", size="xxs", color="#6c7280"))
+        quote = (a.get('quote') or '').strip()
+        if quote:
+            items.append(_txt(f"「{quote}」", size="sm", color="#1f2330", weight="bold", margin="xs"))
+        scores = a.get('scores') or {}
+        for key, label in [("staff", "接客"), ("clean", "清潔"), ("speed", "提供"), ("taste", "味")]:
+            val = scores.get(key, "")
+            if val and val in SCORE_DOTS:
+                dots, color = SCORE_DOTS[val]
+                items.append({
+                    "type": "box", "layout": "horizontal", "margin": "xs",
+                    "contents": [
+                        _txt(label, size="xxs", color="#6c7280", flex=1),
+                        _txt(dots, size="xs", color=color, flex=0),
+                        _txt(f" {val}", size="xxs", color="#6c7280", flex=2, margin="xs"),
+                    ],
+                })
+        action = (a.get('action') or '').strip()
+        if action:
+            items.append({
+                "type": "box", "layout": "vertical", "backgroundColor": "#ffe9d9",
+                "cornerRadius": "4px", "paddingAll": "6px", "margin": "sm",
+                "contents": [_txt(f"💡 {action}", size="xxs", color="#8a4914")],
+            })
+    return items
+
+
+def _review_alert_items(reviews: list, limit: int = 3) -> list:
+    items = []
+    for i, r in enumerate(reviews[:limit]):
+        if i > 0:
+            items.append(_sep("md"))
+        stars = int(r.get('stars') or 0)
+        star_str = "★" * stars + "☆" * (5 - stars) if stars else "★ — —"
+        items.append({
+            "type": "box", "layout": "horizontal",
+            "contents": [
+                _txt(r.get('who', ''), size="xs", color="#1f2330", weight="bold", flex=1),
+                _txt(star_str, size="xs", color="#e0a93b", flex=0),
+            ],
+        })
+        items.append(_txt(r.get('ts', ''), size="xxs", color="#6c7280", margin="xs"))
+        items.append(_txt(f"「{(r.get('quote') or '').strip()}」", size="sm", color="#1f2330", margin="sm"))
+        action = (r.get('action') or '').strip()
+        if action:
+            items.append({
+                "type": "box", "layout": "vertical", "backgroundColor": "#ffe9d9",
+                "cornerRadius": "4px", "paddingAll": "6px", "margin": "sm",
+                "contents": [_txt(f"💡 {action}", size="xxs", color="#8a4914")],
+            })
+    return items
+
+
+def _improvement_items(improvements: list, limit: int = 3) -> list:
+    items = []
+    pc = {"high": "#d65d6e", "medium": "#e0a93b", "low": "#6c7280"}
+    pl = {"high": "最優先", "medium": "推奨", "low": "余裕があれば"}
+    for i, imp in enumerate(improvements[:limit]):
+        if i > 0:
+            items.append(_sep("md"))
+        p = imp.get('priority', 'medium')
+        items.append({
+            "type": "box", "layout": "horizontal", "alignItems": "center", "spacing": "sm",
+            "contents": [
+                {
+                    "type": "box", "layout": "vertical", "backgroundColor": pc.get(p, '#e0a93b'),
+                    "cornerRadius": "12px", "paddingStart": "8px", "paddingEnd": "8px",
+                    "paddingTop": "3px", "paddingBottom": "3px", "width": "70px",
+                    "contents": [_txt(pl.get(p, '推奨'), color="#ffffff", size="xxs",
+                                      weight="bold", align="center")],
+                },
+                _txt(f"{imp.get('icon','')} {imp.get('title','')}", size="md", weight="bold",
+                     color="#1f2330", flex=1),
+            ],
+        })
+        items.append(_txt(imp.get('body', ''), size="xs", color="#3f4451", margin="sm"))
+    return items
+
+
+def _good_items(voices: list, limit: int = 3) -> list:
+    items = []
+    if not voices:
+        items.append(_txt("接客に関する高評価コメントは、本日該当なし。", size="sm", color="#1f7a4f"))
+        items.append(_txt("引き続き丁寧な接客を心がけましょう 🙌", size="xs", color="#6c7280", margin="sm"))
+    else:
+        for i, v in enumerate(voices[:limit]):
+            if i > 0:
+                items.append(_sep("md"))
+            items.append(_txt(v.get('who', ''), size="xs", color="#1f7a4f", weight="bold"))
+            items.append(_txt(v.get('ts', ''), size="xxs", color="#6c7280", margin="xs"))
+            items.append(_txt(f"「{(v.get('quote') or '').strip()}」", size="sm",
+                              color="#143b27", margin="sm"))
+    return items
+
+
+def _counts_row(survey_n: int, review_n: int) -> dict:
+    def box(label, n, sub):
+        return {
+            "type": "box", "layout": "vertical", "flex": 1,
+            "backgroundColor": "#fff5f5", "cornerRadius": "8px", "paddingAll": "10px",
+            "contents": [
+                _txt(label, size="xxs", color="#a3293a"),
+                _txt(str(n), size="xxl", color="#a3293a", weight="bold"),
+                _txt(sub, size="xxs", color="#6c7280"),
+            ],
+        }
+    return {"type": "box", "layout": "horizontal", "spacing": "md",
+            "contents": [box("低評価", survey_n, "アンケート"), box("★3↓", review_n, "クチコミ")]}
+
+
+def build_store_cards(struct: dict, store_name: str, store_location: str) -> list:
+    """1店=2バブルを返す（従来の店舗別カルーセル相当の情報量を維持）。
+    A: サマリー＋今日のひと言＋アンケート低評価／B: 低評価クチコミ＋改善＋良い声＋リンク。"""
+    kpi = struct.get("kpi", {}) or {}
+    survey_n = kpi.get("survey_low_count", 0)
+    review_n = kpi.get("review_low_count", 0)
+    comment = kpi.get("comment_one_line", "")
+    alerts_survey = struct.get("alerts_survey", []) or []
+    alerts_review = struct.get("alerts_review", []) or []
+    improvements = struct.get("improvements", []) or []
+    good_voices = struct.get("good_voices", []) or []
+
+    alert_total = survey_n + review_n
+    badge_color = "#d65d6e" if alert_total >= 3 else ("#e0a93b" if alert_total >= 1 else "#1f7a4f")
+    badge_text = f"要注意 {alert_total}件" if alert_total > 0 else "✓ 異常なし"
+
+    # ---- Card A: サマリー＋今日のひと言＋アンケート低評価 ----
+    bodyA = [
+        _counts_row(survey_n, review_n),
+        _sep("lg"),
+        _txt("💬 今日のひと言", size="xxs", color="#6c7280", weight="bold", margin="md"),
+        _txt(comment or "本日は特筆事項なし。", size="sm", color="#1f2330", margin="sm"),
+    ]
+    if alerts_survey:
+        bodyA.append(_sep("xl"))
+        bodyA.append(_txt(f"🚨 アンケート低評価　{len(alerts_survey)}件",
+                          size="sm", weight="bold", color="#a3293a", margin="md"))
+        bodyA.extend(_survey_alert_items(alerts_survey, 4))
+    cardA = {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical", "backgroundColor": "#1f2330", "paddingAll": "16px",
+            "contents": [
+                {
+                    "type": "box", "layout": "horizontal",
+                    "contents": [
+                        _txt("🍜 " + store_name, color="#ffffff", size="md", weight="bold", flex=1),
+                        {
+                            "type": "box", "layout": "vertical", "backgroundColor": badge_color,
+                            "cornerRadius": "12px", "paddingStart": "10px", "paddingEnd": "10px",
+                            "paddingTop": "3px", "paddingBottom": "3px", "flex": 0,
+                            "contents": [_txt(badge_text, color="#ffffff", size="xxs", weight="bold")],
+                        },
+                    ],
+                },
+                _txt(f"ウィークリーレポート　{WEEK_LABEL}", color="#cfd6db", size="xxs", margin="xs"),
+            ],
+        },
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "18px", "spacing": "none",
+                 "contents": bodyA},
+    }
+
+    # ---- Card B: 低評価クチコミ＋改善アクション＋良い声 ----
+    bodyB = []
+    if alerts_review:
+        bodyB.append(_txt(f"⭐ 低評価クチコミ　{len(alerts_review)}件",
+                          size="sm", weight="bold", color="#a3293a"))
+        bodyB.extend(_review_alert_items(alerts_review, 3))
+    if improvements:
+        if bodyB:
+            bodyB.append(_sep("xl"))
+        bodyB.append(_txt("💡 改善アクション", size="sm", weight="bold", color="#2d736e",
+                          margin=("md" if bodyB else "none")))
+        bodyB.extend(_improvement_items(improvements, 3))
+    if bodyB:
+        bodyB.append(_sep("xl"))
+    bodyB.append(_txt("👍 接客への良い声", size="sm", weight="bold", color="#1f7a4f"))
+    bodyB.extend(_good_items(good_voices, 3))
+    cardB = {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical", "backgroundColor": "#46a39d", "paddingAll": "14px",
+            "contents": [
+                _txt("🍜 " + store_name, color="#ffffff", size="sm", weight="bold"),
+                _txt("クチコミ・改善・良い声", color="#e6f4f2", size="xxs", margin="xs"),
+            ],
+        },
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "18px", "contents": bodyB},
+        "footer": {
+            "type": "box", "layout": "vertical",
+            "contents": [{
+                "type": "button", "style": "primary", "color": "#46a39d", "height": "sm",
+                "action": {"type": "uri", "label": "📊 GaoooNで詳細を確認",
+                           "uri": survey_url(store_location)},
+            }],
+        },
+    }
+    return [cardA, cardB]
+
+
+def build_combined_flex_message(items: list) -> dict:
+    """全店を1通(1カルーセル)にまとめた Flex を返す。items=[(store, struct), ...]
+    先頭に目次バブル＋各店の要約バブル。LINE送信数を 5通→1通 に削減する。"""
+    today_label = TODAY.strftime("%-m/%-d") + " (" + "月火水木金土日"[TODAY.weekday()] + ")"
+
+    # 目次バブル：各店の 要注意件数 を一覧
+    index_rows = []
+    grand_total = 0
+    for store, struct in items:
+        kpi = struct.get("kpi", {}) or {}
+        n = kpi.get("survey_low_count", 0) + kpi.get("review_low_count", 0)
+        grand_total += n
+        color = "#d65d6e" if n >= 3 else ("#e0a93b" if n >= 1 else "#1f7a4f")
+        label = f"要注意 {n}件" if n > 0 else "✓ 異常なし"
+        index_rows.append({
+            "type": "box", "layout": "horizontal", "margin": "md",
+            "contents": [
+                _txt("🍜 " + store["name"], size="sm", color="#1f2330", flex=1, weight="bold"),
+                _txt(label, size="xs", color=color, weight="bold", flex=0, align="end"),
+            ],
+        })
+
+    cover = {
+        "type": "bubble", "size": "mega",
+        "header": {
+            "type": "box", "layout": "vertical",
+            "backgroundColor": "#1f2330", "paddingAll": "18px",
+            "contents": [
+                _txt("🍜 ウィークリーレポート", color="#ffffff", size="lg", weight="bold"),
+                _txt(f"{WEEK_LABEL}　全{len(items)}店まとめ", color="#cfd6db", size="xs", margin="xs"),
+            ],
+        },
+        "body": {
+            "type": "box", "layout": "vertical", "paddingAll": "18px",
+            "contents": [
+                _txt(f"対象期間 {WEEK_LABEL}（先週月〜日）", size="xxs", color="#6c7280"),
+                *index_rows,
+                _sep("xl"),
+                _txt("👉 横スワイプで各店の詳細", color="#46a39d", size="xxs",
+                     margin="md", align="center"),
+            ],
+        },
+    }
+
+    bubbles = [cover]
+    for store, struct in items:
+        bubbles.extend(build_store_cards(struct, store["name"], store["location"]))
+    bubbles = bubbles[:12]  # LINEカルーセル上限12枚（目次+5店×2=11）
+
+    alt = f"🍜 ウィークリーレポート {WEEK_LABEL}｜全{len(items)}店"
+    if grand_total > 0:
+        alt += f"・要注意 計{grand_total}件"
+    return {
+        "type": "flex",
+        "altText": alt[:380],
+        "contents": {"type": "carousel", "contents": bubbles},
+    }
+
+
 # ------------------------------------------------------------------
 # LINE 配信
 # ------------------------------------------------------------------
@@ -1068,8 +1333,9 @@ def main() -> int:
     debug_dir.mkdir(exist_ok=True)
     results = collect_all(STORES, headless=headless, debug_dir=debug_dir)
 
-    # 2. 店舗ごとに要約 → 送信
+    # 2. 店舗ごとに要約（LINE送信は全店まとめて1通にするため、ここでは集約のみ）
     exit_code = 0
+    summaries = []  # [(store, struct), ...]
     for idx, (store, data) in enumerate(results, 1):
         name = store["name"]
         print(f"\n[{idx}/{len(STORES)}] {name} 処理開始", file=sys.stderr)
@@ -1078,7 +1344,6 @@ def main() -> int:
             exit_code = 4
             continue
 
-        # 2-1 Claude 要約
         print(f"  Claude で要約中...", file=sys.stderr)
         try:
             struct = summarize_to_struct(data)
@@ -1086,29 +1351,28 @@ def main() -> int:
             print(f"  ERROR: 要約失敗 {e}", file=sys.stderr)
             exit_code = 5
             continue
+        summaries.append((store, struct))
 
-        # 2-2 Flex 組み立て
-        flex_msg = build_flex_message(struct, name, store["location"])
+    if not summaries:
+        print("  ERROR: 送信できる店舗がありません", file=sys.stderr)
+        print(f"\n[完了] exit code={exit_code or 4}", file=sys.stderr)
+        return exit_code or 4
 
-        # 2-3 送信 or ドライラン
-        if SEND_MODE == "send":
-            ok, info = send_line_broadcast(flex_msg)
-            print(f"  LINE送信: {info}", file=sys.stderr)
-            if not ok:
-                exit_code = 6
-            # LINE 連続送信防止のため店舗間に短いウェイト
-            if idx < len(STORES):
-                import time
-                time.sleep(2)
-        else:
-            print(f"  （ドライラン）", file=sys.stderr)
-            print(f"--- {name} Flex JSON ---")
-            print(json.dumps(flex_msg, ensure_ascii=False, indent=2))
-
-    # 全店送信成功なら対象週を送信済みとして記録（次回以降の二重送信を防ぐ）
-    if SEND_MODE == "send" and exit_code == 0:
-        record_sent_this_week()
-        print(f"  対象週 {WEEK_LABEL} を送信済みとして記録", file=sys.stderr)
+    # 3. 全店を1通(1カルーセル)にまとめて送信（LINEメッセージ消費を 5通→1通 に削減）
+    combined = build_combined_flex_message(summaries)
+    if SEND_MODE == "send":
+        ok, info = send_line_broadcast(combined)
+        print(f"  LINE送信(全{len(summaries)}店まとめ1通): {info}", file=sys.stderr)
+        if not ok:
+            exit_code = 6
+        elif exit_code == 0:
+            # 全店成功で送信できたときのみ対象週を送信済みとして記録
+            record_sent_this_week()
+            print(f"  対象週 {WEEK_LABEL} を送信済みとして記録", file=sys.stderr)
+    else:
+        print(f"  （ドライラン）全{len(summaries)}店まとめ1通", file=sys.stderr)
+        print("--- 全店まとめ Flex JSON ---")
+        print(json.dumps(combined, ensure_ascii=False, indent=2))
 
     print(f"\n[完了] exit code={exit_code}", file=sys.stderr)
     return exit_code
