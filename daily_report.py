@@ -1010,7 +1010,7 @@ def build_flex_message(struct: dict, store_name: str, store_location: str) -> di
 
 
 # ----- 明細項目ビルダー（カード本文に差し込むコンポーネント配列を返す）-----
-def _survey_alert_items(alerts: list, limit: int = 4) -> list:
+def _survey_alert_items(alerts: list, limit: int = 4, show_dots: bool = True) -> list:
     items = []
     for i, a in enumerate(alerts[:limit]):
         if i > 0:
@@ -1020,18 +1020,28 @@ def _survey_alert_items(alerts: list, limit: int = 4) -> list:
         if quote:
             items.append(_txt(f"「{quote}」", size="sm", color="#1f2330", weight="bold", margin="xs"))
         scores = a.get('scores') or {}
-        for key, label in [("staff", "接客"), ("clean", "清潔"), ("speed", "提供"), ("taste", "味")]:
-            val = scores.get(key, "")
-            if val and val in SCORE_DOTS:
-                dots, color = SCORE_DOTS[val]
-                items.append({
-                    "type": "box", "layout": "horizontal", "margin": "xs",
-                    "contents": [
-                        _txt(label, size="xxs", color="#6c7280", flex=1),
-                        _txt(dots, size="xs", color=color, flex=0),
-                        _txt(f" {val}", size="xxs", color="#6c7280", flex=2, margin="xs"),
-                    ],
-                })
+        if show_dots:
+            for key, label in [("staff", "接客"), ("clean", "清潔"), ("speed", "提供"), ("taste", "味")]:
+                val = scores.get(key, "")
+                if val and val in SCORE_DOTS:
+                    dots, color = SCORE_DOTS[val]
+                    items.append({
+                        "type": "box", "layout": "horizontal", "margin": "xs",
+                        "contents": [
+                            _txt(label, size="xxs", color="#6c7280", flex=1),
+                            _txt(dots, size="xs", color=color, flex=0),
+                            _txt(f" {val}", size="xxs", color="#6c7280", flex=2, margin="xs"),
+                        ],
+                    })
+        else:
+            # スコアは1行に圧縮（接客:良くない / 清潔:普通 …）
+            parts = []
+            for key, label in [("staff", "接客"), ("clean", "清潔"), ("speed", "提供"), ("taste", "味")]:
+                val = scores.get(key, "")
+                if val:
+                    parts.append(f"{label}:{val}")
+            if parts:
+                items.append(_txt(" / ".join(parts), size="xxs", color="#6c7280", margin="xs"))
         action = (a.get('action') or '').strip()
         if action:
             items.append({
@@ -1125,9 +1135,13 @@ def _counts_row(survey_n: int, review_n: int) -> dict:
             "contents": [box("低評価", survey_n, "アンケート"), box("★3↓", review_n, "クチコミ")]}
 
 
-def build_store_cards(struct: dict, store_name: str, store_location: str) -> list:
+def build_store_cards(struct: dict, store_name: str, store_location: str,
+                      survey_limit: int = 4, show_dots: bool = True,
+                      review_limit: int = 3, improve_limit: int = 3,
+                      good_limit: int = 3) -> list:
     """1店=2バブルを返す（従来の店舗別カルーセル相当の情報量を維持）。
-    A: サマリー＋今日のひと言＋アンケート低評価／B: 低評価クチコミ＋改善＋良い声＋リンク。"""
+    A: サマリー＋今日のひと言＋アンケート低評価／B: 低評価クチコミ＋改善＋良い声＋リンク。
+    各 *_limit / show_dots でカルーセル50KB制限に収まるよう詳細度を調整できる。"""
     kpi = struct.get("kpi", {}) or {}
     survey_n = kpi.get("survey_low_count", 0)
     review_n = kpi.get("review_low_count", 0)
@@ -1148,11 +1162,11 @@ def build_store_cards(struct: dict, store_name: str, store_location: str) -> lis
         _txt("💬 今日のひと言", size="xxs", color="#6c7280", weight="bold", margin="md"),
         _txt(comment or "本日は特筆事項なし。", size="sm", color="#1f2330", margin="sm"),
     ]
-    if alerts_survey:
+    if alerts_survey and survey_limit > 0:
         bodyA.append(_sep("xl"))
         bodyA.append(_txt(f"🚨 アンケート低評価　{len(alerts_survey)}件",
                           size="sm", weight="bold", color="#a3293a", margin="md"))
-        bodyA.extend(_survey_alert_items(alerts_survey, 4))
+        bodyA.extend(_survey_alert_items(alerts_survey, survey_limit, show_dots))
     cardA = {
         "type": "bubble", "size": "mega",
         "header": {
@@ -1179,20 +1193,23 @@ def build_store_cards(struct: dict, store_name: str, store_location: str) -> lis
 
     # ---- Card B: 低評価クチコミ＋改善アクション＋良い声 ----
     bodyB = []
-    if alerts_review:
+    if alerts_review and review_limit > 0:
         bodyB.append(_txt(f"⭐ 低評価クチコミ　{len(alerts_review)}件",
                           size="sm", weight="bold", color="#a3293a"))
-        bodyB.extend(_review_alert_items(alerts_review, 3))
-    if improvements:
+        bodyB.extend(_review_alert_items(alerts_review, review_limit))
+    if improvements and improve_limit > 0:
         if bodyB:
             bodyB.append(_sep("xl"))
         bodyB.append(_txt("💡 改善アクション", size="sm", weight="bold", color="#2d736e",
                           margin=("md" if bodyB else "none")))
-        bodyB.extend(_improvement_items(improvements, 3))
-    if bodyB:
-        bodyB.append(_sep("xl"))
-    bodyB.append(_txt("👍 接客への良い声", size="sm", weight="bold", color="#1f7a4f"))
-    bodyB.extend(_good_items(good_voices, 3))
+        bodyB.extend(_improvement_items(improvements, improve_limit))
+    if good_limit > 0:
+        if bodyB:
+            bodyB.append(_sep("xl"))
+        bodyB.append(_txt("👍 接客への良い声", size="sm", weight="bold", color="#1f7a4f"))
+        bodyB.extend(_good_items(good_voices, good_limit))
+    if not bodyB:
+        bodyB.append(_txt("先週は大きな指摘はありませんでした。", size="sm", color="#1f7a4f"))
     cardB = {
         "type": "bubble", "size": "mega",
         "header": {
@@ -1259,10 +1276,37 @@ def build_combined_flex_message(items: list) -> dict:
         },
     }
 
-    bubbles = [cover]
-    for store, struct in items:
-        bubbles.extend(build_store_cards(struct, store["name"], store["location"]))
-    bubbles = bubbles[:12]  # LINEカルーセル上限12枚（目次+5店×2=11）
+    # LINEカルーセルJSONは50KB上限。データ量に応じて詳細度を段階的に下げ、
+    # 50KB（安全マージンで48KB）以内に収まる最も詳しいレベルを採用する。
+    LIMIT_BYTES = 48000
+    LEVELS = [
+        dict(survey_limit=4, show_dots=True,  review_limit=3, improve_limit=3, good_limit=3),
+        dict(survey_limit=3, show_dots=True,  review_limit=2, improve_limit=3, good_limit=2),
+        dict(survey_limit=3, show_dots=False, review_limit=2, improve_limit=2, good_limit=1),
+        dict(survey_limit=2, show_dots=False, review_limit=2, improve_limit=2, good_limit=0),
+        dict(survey_limit=2, show_dots=False, review_limit=1, improve_limit=1, good_limit=0),
+        dict(survey_limit=1, show_dots=False, review_limit=1, improve_limit=1, good_limit=0),
+    ]
+
+    def carousel_bytes(carousel):
+        return len(json.dumps(carousel, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    chosen = None
+    for lvl, opts in enumerate(LEVELS):
+        bubbles = [cover]
+        for store, struct in items:
+            bubbles.extend(build_store_cards(struct, store["name"], store["location"], **opts))
+        bubbles = bubbles[:12]  # カルーセル上限12枚（目次+5店×2=11）
+        carousel = {"type": "carousel", "contents": bubbles}
+        size = carousel_bytes(carousel)
+        if size <= LIMIT_BYTES:
+            chosen = carousel
+            print(f"  Flex詳細レベル {lvl} を採用（{size}B ≤ {LIMIT_BYTES}B）", file=sys.stderr)
+            break
+        print(f"  Flexレベル {lvl} は {size}B で超過 → 詳細度を下げる", file=sys.stderr)
+    if chosen is None:
+        chosen = carousel  # 最も簡素でも超える場合は最後のを使用（理論上ほぼ無い）
+        print(f"  WARN: 最簡素レベルでも {carousel_bytes(carousel)}B（要確認）", file=sys.stderr)
 
     alt = f"🍜 ウィークリーレポート {WEEK_LABEL}｜全{len(items)}店"
     if grand_total > 0:
@@ -1270,7 +1314,7 @@ def build_combined_flex_message(items: list) -> dict:
     return {
         "type": "flex",
         "altText": alt[:380],
-        "contents": {"type": "carousel", "contents": bubbles},
+        "contents": chosen,
     }
 
 
