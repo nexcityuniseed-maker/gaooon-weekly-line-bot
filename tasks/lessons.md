@@ -81,6 +81,32 @@
 - 配信量はクォータ(`/v2/bot/message/quota`,`/consumption`)とグループ人数
   (`/v2/bot/group/{id}/members/count`)で実測できる。
 
+## 2026-06-22 1通集約版が「カルーセル50KB上限」超過で送信失敗（HTTP400）
+
+### 症状
+全5店を1通に集約後、定期配信が `HTTP 400 Too large flex message. The maximum size of
+JSON data that defines a carousel is 50 KB.` で失敗（exit 6、データ取得は全店成功）。
+
+### 原因
+- LINEのFlexカルーセルはJSONサイズ**50KB上限**。
+- 5店×2カード（特にアンケート低評価のスコア●行が冗長）＝約**69.7KB**で超過。
+- データ量は週で変動するため、固定の詳細度では重い週に超過し得る。
+- 注意：1 pushに複数メッセージを束ねても各メッセージが個別課金なので、消費削減には
+  「1メッセージ(1カルーセル)化」が必須。その1カルーセルが50KB上限に縛られる。
+
+### 対応（実装済み）
+- `build_combined_flex_message()` に**サイズ自動調整**を実装。詳細度レベルを段階的に
+  下げ（survey 4→1、スコア●→1行圧縮、review/improve/good を削減）、カルーセルJSONが
+  48KB（安全マージン）以内になる最も詳しいレベルを採用。
+- `build_store_cards()` に `survey_limit/show_dots/review_limit/improve_limit/good_limit`、
+  `_survey_alert_items()` に `show_dots` を追加。
+- 検証：実データで Lv2（42.9KB）採用、重い合成データでも Lv3（46.5KB）で50KB以内。
+
+### 教訓
+- **Flexカルーセルは50KB上限**。多件数を1通に集約するなら、サイズ実測＋動的トリムで
+  上限内に収める設計を最初から入れる（固定レイアウトは重い週に破綻する）。
+- 送信前にJSONバイト数を測る癖をつける（`json.dumps(...,separators=(",",":"))` のUTF-8長）。
+
 ### 既知の残課題（フォロー候補）
 - **年セレクタ**: `select_option(label="YYYY年")` が TimeoutError（当年=2026がデフォルト選択済みのため現状は実害なし、best-effort・6sでfail-fast化済み）。**1月の年境界週（先週が前年12月）でのみ問題**になり得る。要・1月での実地検証。
 - altText の「要注意 N件」とKPIバッジの件数が異なる場合がある（別集計・既存仕様、本バグとは無関係）。
